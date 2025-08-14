@@ -1,0 +1,32 @@
+# Swift Package Manager
+.build/
+Packages/
+Package.resolved
+*.xcodeproj/
+
+# Xcode
+DerivedData/
+xcuserdata/
+*.xcworkspace/
+
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# NDI-specific
+ndi-webcam-portable/
+ndi-webcam-portable.zip
+*.app
+
+# Logs
+*.log
+
+# Temporary files
+*~
+*.swp
+*.tmp
