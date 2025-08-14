@@ -115,41 +115,43 @@ class CameraCapture: NSObject {
             
             // Find the best matching frame rate
             var targetFrameRate = frameRate
-            var foundSupported = false
             
-            // Check if requested frame rate is supported
+            // Find the closest supported frame rate (don't assume exact match due to floating point precision)
+            var bestRange: AVFrameRateRange?
+            var useMaxRate = true
+            var smallestDifference: Double = Double.greatestFiniteMagnitude
+            
+            // Find the closest frame rate from all available ranges
             for range in ranges {
-                if frameRate >= range.minFrameRate && frameRate <= range.maxFrameRate {
-                    foundSupported = true
-                    break
+                // Check if we can use the max rate of this range
+                let maxDifference = abs(range.maxFrameRate - frameRate)
+                if maxDifference < smallestDifference {
+                    smallestDifference = maxDifference
+                    bestRange = range
+                    useMaxRate = true
+                    targetFrameRate = range.maxFrameRate
+                }
+                
+                // Also check the min rate of this range (though most are single-rate ranges)
+                let minDifference = abs(range.minFrameRate - frameRate)
+                if minDifference < smallestDifference {
+                    smallestDifference = minDifference
+                    bestRange = range
+                    useMaxRate = false
+                    targetFrameRate = range.minFrameRate
                 }
             }
             
-            // If not supported, find the closest supported frame rate
-            if !foundSupported {
-                // Try to find the closest lower frame rate first
-                for range in ranges.sorted(by: { $0.maxFrameRate < $1.maxFrameRate }) {
-                    if range.minFrameRate <= frameRate {
-                        targetFrameRate = min(frameRate, range.maxFrameRate)
-                        foundSupported = true
-                        break
-                    }
-                }
+            if let range = bestRange {
                 
-                // If still not found, use the lowest available frame rate
-                if !foundSupported, let lowestRange = ranges.min(by: { $0.minFrameRate < $1.minFrameRate }) {
-                    targetFrameRate = lowestRange.minFrameRate
-                    foundSupported = true
-                }
-            }
-            
-            if foundSupported {
-                let fps = CMTime(value: 1, timescale: CMTimeScale(targetFrameRate))
-                videoDevice.activeVideoMinFrameDuration = fps
-                videoDevice.activeVideoMaxFrameDuration = fps
+                // Use the exact duration from the range to avoid floating point precision issues
+                let targetDuration = useMaxRate ? range.maxFrameDuration : range.minFrameDuration
+                videoDevice.activeVideoMinFrameDuration = targetDuration
+                videoDevice.activeVideoMaxFrameDuration = targetDuration
                 
-                if targetFrameRate != frameRate {
-                    logger.warning("Requested \(frameRate) fps not supported. Using \(targetFrameRate) fps instead.")
+                let difference = abs(targetFrameRate - frameRate)
+                if difference > 0.1 { // Only warn if significantly different
+                    logger.warning("Requested \(frameRate) fps not supported. Using closest match: \(targetFrameRate) fps")
                 } else {
                     logger.info("Frame rate set to \(targetFrameRate) fps")
                 }
