@@ -11,8 +11,13 @@ class NDIWebcam {
     private var frameCount: UInt64 = 0
     private var startTime = Date()
     private var lastFPSReport = Date()
+    private var statusTimer: Timer?
+    private var currentFPS: Double = 0.0
+    private let encodingMode: NDIEncodingMode
     
     init(sourceName: String, resolution: AVCaptureSession.Preset, frameRate: Double, verbose: Bool, encodingMode: NDIEncodingMode = .uncompressed) {
+        self.encodingMode = encodingMode
+        
         // Configure logger
         logger.logLevel = verbose ? .debug : .info
         
@@ -69,46 +74,60 @@ class NDIWebcam {
         logger.info("NDI stream available as: \(ndiSender.sourceName)")
         logger.info("Waiting for subscribers...")
         
-        // Print status periodically
-        Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
-            self?.printStatus()
+        // Start dynamic status line (updates every second)
+        startStatusLine()
+    }
+    
+    private func startStatusLine() {
+        statusTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.updateStatusLine()
         }
     }
     
-    private func printStatus() {
+    private func updateStatusLine() {
+        // Calculate FPS
+        let elapsed = Date().timeIntervalSince(lastFPSReport)
+        if elapsed >= 1.0 {
+            currentFPS = Double(frameCount) / elapsed
+            frameCount = 0
+            lastFPSReport = Date()
+        }
+        
+        // Get current status
         let uptime = Date().timeIntervalSince(startTime)
         let connections = ndiSender.getConnectionCount()
         
+        // Format uptime
         let hours = Int(uptime) / 3600
         let minutes = (Int(uptime) % 3600) / 60
         let seconds = Int(uptime) % 60
-        
         let uptimeStr = String(format: "%02d:%02d:%02d", hours, minutes, seconds)
         
-        if frameCount > 0 {
-            let elapsed = Date().timeIntervalSince(lastFPSReport)
-            let fps = Double(frameCount) / elapsed
-            logger.info("Status - Uptime: \(uptimeStr), Subscribers: \(connections), FPS: \(String(format: "%.1f", fps))")
-            frameCount = 0
-            lastFPSReport = Date()
-        } else {
-            logger.info("Status - Uptime: \(uptimeStr), Subscribers: \(connections), Camera: inactive")
-        }
+        // Create status line
+        let cameraStatus = connections > 0 ? "ACTIVE" : "WAITING"
+        let encodingStr = encodingMode == .hx3 ? "HX3" : "RAW"
+        let fpsStr = connections > 0 ? String(format: "%.1f", currentFPS) : "0.0"
+        
+        // Clear line and print status
+        print("\r\u{1B}[K", terminator: "")  // Clear current line
+        print("📹 \(cameraStatus) | 🌐 \(connections) subscriber\(connections == 1 ? "" : "s") | ⚡ \(fpsStr) fps | 🎬 \(encodingStr) | ⏱️  \(uptimeStr)", terminator: "")
+        fflush(stdout)
     }
     
     private func setupSignalHandlers() {
         signal(SIGINT) { _ in
-            print("\nShutting down...")
+            print("\n\nShutting down...")
             exit(0)
         }
         
         signal(SIGTERM) { _ in
-            print("\nShutting down...")
+            print("\n\nShutting down...")
             exit(0)
         }
     }
     
     deinit {
+        statusTimer?.invalidate()
         camera.stopCapture()
         subscriberMonitor.stopMonitoring()
         ndiSender.stop()
