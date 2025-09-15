@@ -12,12 +12,12 @@ class NDIWebcam {
     private var startTime = Date()
     private var lastFPSReport = Date()
     
-    init(sourceName: String, resolution: AVCaptureSession.Preset, frameRate: Double, verbose: Bool) {
+    init(sourceName: String, resolution: AVCaptureSession.Preset, frameRate: Double, verbose: Bool, encodingMode: NDIEncodingMode = .uncompressed) {
         // Configure logger
         logger.logLevel = verbose ? .debug : .info
         
         // Create NDI sender first
-        ndiSender = NDISender(sourceName: sourceName)
+        ndiSender = NDISender(sourceName: sourceName, encodingMode: encodingMode)
         
         // Create subscriber monitor
         subscriberMonitor = SubscriberMonitor(ndiSender: ndiSender)
@@ -26,6 +26,9 @@ class NDIWebcam {
         camera.resolution = resolution
         camera.frameRate = frameRate
         camera.delegate = self
+        
+        // Set frame rate for HX3 encoding
+        ndiSender.setFrameRate(frameRate)
         
         // Set subscriber monitor delegate
         subscriberMonitor.delegate = self
@@ -157,6 +160,7 @@ struct CommandLineArgs {
     var resolution = AVCaptureSession.Preset.hd1920x1080
     var frameRate = 30.0
     var verbose = false
+    var encodingMode = NDIEncodingMode.uncompressed
     
     static func parse() -> CommandLineArgs {
         var args = CommandLineArgs()
@@ -217,6 +221,25 @@ struct CommandLineArgs {
                 args.verbose = true
                 i += 1
                 
+            case "--encoding":
+                if i + 1 < arguments.count {
+                    let encoding = arguments[i + 1].lowercased()
+                    switch encoding {
+                    case "uncompressed", "raw":
+                        args.encodingMode = .uncompressed
+                    case "hx3", "h264":
+                        args.encodingMode = .hx3
+                    default:
+                        print("Invalid encoding mode: \(encoding)")
+                        printHelp()
+                        exit(1)
+                    }
+                    i += 2
+                } else {
+                    printHelp()
+                    exit(1)
+                }
+                
             case "--help", "-h":
                 printHelp()
                 exit(0)
@@ -241,11 +264,18 @@ struct CommandLineArgs {
           --name <string>      NDI source name (default: "Swift NDI Camera")
           --resolution <res>   Resolution: 720p, 1080p (default), 4k
           --fps <number>       Frame rate (default: 30)
+          --encoding <mode>    Encoding: uncompressed (default), hx3
           --verbose, -v        Enable verbose logging
           --help, -h           Show this help message
         
-        Example:
+        Encoding Modes:
+          uncompressed (raw)   High quality, high bandwidth (default)
+          hx3 (h264)          H.264 compressed, optimized for latency and bandwidth
+        
+        Examples:
           ndi-webcam --name "Mac Camera" --resolution 1080p --fps 30
+          ndi-webcam --encoding hx3 --name "Low Bandwidth Camera"
+          ndi-webcam --encoding uncompressed --resolution 4k --fps 60
         
         Note: NDI SDK must be installed from ndi.tv
         """)
@@ -264,6 +294,7 @@ print("""
 Source Name: \(args.sourceName)
 Resolution: \(args.resolution.rawValue)
 Frame Rate: \(args.frameRate) fps
+Encoding: \(args.encodingMode == .hx3 ? "NDI|HX3 (H.264)" : "Uncompressed")
 
 Starting...
 """)
@@ -272,7 +303,8 @@ let streamer = NDIWebcam(
     sourceName: args.sourceName,
     resolution: args.resolution,
     frameRate: args.frameRate,
-    verbose: args.verbose
+    verbose: args.verbose,
+    encodingMode: args.encodingMode
 )
 
 streamer.run()

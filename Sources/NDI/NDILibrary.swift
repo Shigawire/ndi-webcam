@@ -18,6 +18,7 @@ class NDILibrary {
     private var _send_get_source_name: NDIlib_send_get_source_name_func?
     private var _send_clear_connection_metadata: NDIlib_send_clear_connection_metadata_func?
     
+    
     // Possible NDI library paths on macOS
     private let libraryPaths = [
         "/Library/NDI SDK for Apple/lib/macOS/libndi.dylib",
@@ -79,6 +80,7 @@ class NDILibrary {
         _send_get_no_connections = unsafeBitCast(dlsym(handle, "NDIlib_send_get_no_connections"), to: NDIlib_send_get_no_connections_func?.self)
         _send_get_source_name = unsafeBitCast(dlsym(handle, "NDIlib_send_get_source_name"), to: NDIlib_send_get_source_name_func?.self)
         _send_clear_connection_metadata = unsafeBitCast(dlsym(handle, "NDIlib_send_clear_connection_metadata"), to: NDIlib_send_clear_connection_metadata_func?.self)
+        
         
         // Check all required functions are loaded
         return _initialize != nil &&
@@ -148,6 +150,12 @@ class NDILibrary {
     
     func clearConnectionMetadata(_ sender: OpaquePointer) {
         _send_clear_connection_metadata?(sender)
+    }
+    
+    var supportsHX3: Bool {
+        // H.264 compression works through standard NDI video frames with compressed FourCC
+        // No special functions needed - just send H.264 data as compressed video frame
+        return true
     }
     
     deinit {
