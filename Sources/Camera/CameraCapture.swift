@@ -16,6 +16,8 @@ class CameraCapture: NSObject {
     
     private var isRunning = false
     private let logger = Logger.shared
+    private var captureFrameCount = 0
+    private var selectedDevice: AVCaptureDevice?
     
     var resolution: AVCaptureSession.Preset = .hd1920x1080
     var frameRate: Double = 30.0
@@ -23,6 +25,50 @@ class CameraCapture: NSObject {
     override init() {
         super.init()
         setupSession()
+    }
+    
+    // MARK: - Camera Discovery
+    
+    static func listAvailableCameras() -> [(index: Int, device: AVCaptureDevice)] {
+        let discoverySession = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInWideAngleCamera, .externalUnknown],
+            mediaType: .video,
+            position: .unspecified
+        )
+        
+        return discoverySession.devices.enumerated().map { (index: $0.offset, device: $0.element) }
+    }
+    
+    static func printAvailableCameras() {
+        let cameras = listAvailableCameras()
+        
+        print("Available cameras:")
+        if cameras.isEmpty {
+            print("  No cameras found")
+            return
+        }
+        
+        for (index, device) in cameras {
+            let deviceType = device.deviceType == .builtInWideAngleCamera ? "Built-in" : "External"
+            let uniqueID = String(device.uniqueID.prefix(8))
+            print("  \(index): \(device.localizedName) (\(deviceType)) [ID: \(uniqueID)]")
+        }
+    }
+    
+    static func getCameraByIndex(_ index: Int) -> AVCaptureDevice? {
+        let cameras = listAvailableCameras()
+        guard index >= 0 && index < cameras.count else { return nil }
+        return cameras[index].device
+    }
+    
+    static func getCameraByName(_ name: String) -> AVCaptureDevice? {
+        let cameras = listAvailableCameras()
+        return cameras.first { $0.device.localizedName.lowercased().contains(name.lowercased()) }?.device
+    }
+    
+    func setCamera(device: AVCaptureDevice) {
+        selectedDevice = device
+        logger.info("Selected camera: \(device.localizedName)")
     }
     
     private func setupSession() {
@@ -37,11 +83,19 @@ class CameraCapture: NSObject {
                 self.captureSession.sessionPreset = self.resolution
             }
             
-            // Get default video device
-            guard let videoDevice = AVCaptureDevice.default(for: .video) else {
-                self.logger.error("No video device available")
-                return
+            // Get selected video device or default
+            let videoDevice: AVCaptureDevice
+            if let selected = selectedDevice {
+                videoDevice = selected
+            } else {
+                guard let defaultDevice = AVCaptureDevice.default(for: .video) else {
+                    self.logger.error("❌ No video device available")
+                    return
+                }
+                videoDevice = defaultDevice
             }
+            
+            self.logger.debug("📹 Using camera device: \(videoDevice.localizedName)")
             
             // Create input
             do {
@@ -49,12 +103,25 @@ class CameraCapture: NSObject {
                 
                 if self.captureSession.canAddInput(videoInput) {
                     self.captureSession.addInput(videoInput)
+                    self.logger.debug("✅ Video input added to session")
                 } else {
-                    self.logger.error("Cannot add video input to session")
+                    self.logger.error("❌ Cannot add video input to session")
                     return
                 }
             } catch {
-                self.logger.error("Error creating video input: \(error)")
+                self.logger.error("❌ Error creating video input: \(error)")
+                
+                // Provide specific error details for camera exclusivity
+                if let avError = error as? AVError {
+                    switch avError.code {
+                    case .deviceAlreadyUsedByAnotherSession:
+                        self.logger.error("⚠️ Camera is already in use by another application")
+                    case .deviceNotConnected:
+                        self.logger.error("⚠️ Camera device not connected")
+                    default:
+                        self.logger.error("⚠️ Camera error code: \(avError.code.rawValue)")
+                    }
+                }
                 return
             }
             
@@ -169,9 +236,43 @@ class CameraCapture: NSObject {
             guard let self = self else { return }
             
             if !self.isRunning {
+                self.logger.info("🎥 Starting camera capture session...")
+                
+                // Check for camera access issues
+                let authStatus = AVCaptureDevice.authorizationStatus(for: .video)
+                if authStatus != .authorized {
+                    self.logger.error("❌ Camera access denied. Status: \(authStatus)")
+                    return
+                }
+                
+                // Check if any camera device is available
+                guard AVCaptureDevice.default(for: .video) != nil else {
+                    self.logger.error("❌ No camera device available")
+                    return
+                }
+                
                 self.captureSession.startRunning()
                 self.isRunning = true
-                self.logger.info("Camera capture started")
+                
+                // Check if session actually started with detailed error info
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    if self.captureSession.isRunning {
+                        self.logger.info("✅ Camera capture session confirmed running")
+                        
+                        // Reset frame counter when camera starts
+                        self.captureFrameCount = 0
+                    } else {
+                        self.logger.error("❌ Camera capture session failed to start")
+                        self.logger.error("⚠️ This may be caused by camera being used by another application")
+                        
+                        // Log session state for debugging
+                        self.logger.debug("Session running: \(self.captureSession.isRunning)")
+                        self.logger.debug("Session inputs: \(self.captureSession.inputs.count)")
+                        self.logger.debug("Session outputs: \(self.captureSession.outputs.count)")
+                    }
+                }
+            } else {
+                self.logger.info("📹 Camera capture already running")
             }
         }
     }
@@ -181,9 +282,12 @@ class CameraCapture: NSObject {
             guard let self = self else { return }
             
             if self.isRunning {
+                self.logger.info("🛑 Stopping camera capture session...")
                 self.captureSession.stopRunning()
                 self.isRunning = false
-                self.logger.info("Camera capture stopped")
+                self.logger.info("✅ Camera capture stopped")
+            } else {
+                self.logger.info("📹 Camera capture already stopped")
             }
         }
     }
@@ -209,12 +313,19 @@ extension CameraCapture: AVCaptureVideoDataOutputSampleBufferDelegate {
     func captureOutput(_ output: AVCaptureOutput, 
                       didOutput sampleBuffer: CMSampleBuffer, 
                       from connection: AVCaptureConnection) {
+        // Debug logging for first few frames to verify capture is working
+        captureFrameCount += 1
+        
+        if captureFrameCount <= 5 {
+            logger.debug("📸 Camera captured frame \(captureFrameCount) - forwarding to delegate")
+        }
+        
         delegate?.cameraCapture(self, didOutput: sampleBuffer)
     }
     
     func captureOutput(_ output: AVCaptureOutput, 
                       didDrop sampleBuffer: CMSampleBuffer, 
                       from connection: AVCaptureConnection) {
-        logger.warning("Dropped frame")
+        logger.warning("⚠️ Dropped camera frame - session overloaded")
     }
 }

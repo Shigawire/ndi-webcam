@@ -16,6 +16,7 @@ class SubscriberMonitor {
     private var zeroConnectionTime: Date?
     private let hysteresisDelay: TimeInterval = 2.0 // 2 seconds before stopping camera
     private let pollInterval: TimeInterval = 0.5 // Check every 500ms
+    private var debugCheckCount = 0
     
     private var isCameraActive = false
     
@@ -42,9 +43,15 @@ class SubscriberMonitor {
     private func checkSubscribers() {
         let currentCount = ndiSender.getConnectionCount()
         
+        // Debug logging every 10 checks when no change (to avoid spam)
+        debugCheckCount += 1
+        if debugCheckCount % 20 == 0 { // Every 10 seconds at 500ms intervals
+            logger.debug("🔍 Subscriber check #\(debugCheckCount): \(currentCount) connections, camera active: \(isCameraActive)")
+        }
+        
         // Notify if count changed
         if currentCount != lastConnectionCount {
-            logger.info("Subscriber count changed: \(lastConnectionCount) → \(currentCount)")
+            logger.info("🔄 Subscriber count changed: \(lastConnectionCount) → \(currentCount)")
             delegate?.subscriberMonitor(self, subscribersChanged: currentCount)
             
             // Handle new subscribers
@@ -72,27 +79,29 @@ class SubscriberMonitor {
     }
     
     private func handleSubscribersConnected() {
-        logger.info("First subscriber connected")
+        logger.info("🔗 First subscriber connected - triggering camera start")
         zeroConnectionTime = nil // Reset hysteresis timer
         
         if !isCameraActive {
             startCamera()
+        } else {
+            logger.info("📹 Camera already active, no action needed")
         }
     }
     
     private func handleSubscribersDisconnected() {
-        logger.info("All subscribers disconnected, starting hysteresis timer")
+        logger.info("🔌 All subscribers disconnected, starting \(hysteresisDelay)s hysteresis timer")
         zeroConnectionTime = Date() // Start hysteresis timer
     }
     
     private func startCamera() {
-        logger.info("Starting camera due to subscriber activity")
+        logger.info("▶️ Starting camera due to subscriber activity")
         isCameraActive = true
         delegate?.subscriberMonitorShouldStartCamera(self)
     }
     
     private func stopCamera() {
-        logger.info("Stopping camera after hysteresis delay")
+        logger.info("⏹️ Stopping camera after hysteresis delay")
         isCameraActive = false
         zeroConnectionTime = nil
         delegate?.subscriberMonitorShouldStopCamera(self)

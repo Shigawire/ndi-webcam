@@ -6,9 +6,12 @@ let NDI_FourCC_BGRX = UInt32(0x58524742) // 'BGRX'
 let NDI_FourCC_RGBA = UInt32(0x41424752) // 'RGBA'
 let NDI_FourCC_RGBX = UInt32(0x58424752) // 'RGBX'
 
-// NDI H.264 FourCC codes (based on NDI documentation)
+// NDI compressed video FourCC codes (based on NDI documentation)
 // H.264 compressed video - using standard NDI approach
 let NDI_FourCC_H264 = UInt32(NDI_LIB_FOURCC(Character("H").asciiValue!, Character("2").asciiValue!, Character("6").asciiValue!, Character("4").asciiValue!))
+// H.265/HEVC compressed video
+let NDI_FourCC_HEVC = UInt32(NDI_LIB_FOURCC(Character("H").asciiValue!, Character("2").asciiValue!, Character("6").asciiValue!, Character("5").asciiValue!))
+let NDI_FourCC_H265 = UInt32(NDI_LIB_FOURCC(Character("H").asciiValue!, Character("E").asciiValue!, Character("V").asciiValue!, Character("C").asciiValue!))
 
 // Helper to create FourCC from characters
 private func NDI_LIB_FOURCC(_ ch0: UInt8, _ ch1: UInt8, _ ch2: UInt8, _ ch3: UInt8) -> UInt32 {

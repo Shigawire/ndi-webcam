@@ -3,7 +3,7 @@ import AVFoundation
 import CoreMedia
 
 class NDIWebcam {
-    private let camera = CameraCapture()
+    private let camera: CameraCapture
     private let ndiSender: NDISender
     private let subscriberMonitor: SubscriberMonitor
     private let logger = Logger.shared
@@ -14,9 +14,14 @@ class NDIWebcam {
     private var statusTimer: Timer?
     private var currentFPS: Double = 0.0
     private let encodingMode: NDIEncodingMode
+    private let forceCameraMode: Bool
     
-    init(sourceName: String, resolution: AVCaptureSession.Preset, frameRate: Double, verbose: Bool, encodingMode: NDIEncodingMode = .uncompressed) {
+    init(sourceName: String, resolution: AVCaptureSession.Preset, frameRate: Double, verbose: Bool, encodingMode: NDIEncodingMode = .uncompressed, forceCamera: Bool = false, camera: CameraCapture? = nil) {
         self.encodingMode = encodingMode
+        self.forceCameraMode = forceCamera
+        
+        // Use provided camera or create a new one
+        self.camera = camera ?? CameraCapture()
         
         // Configure logger
         logger.logLevel = verbose ? .debug : .info
@@ -28,9 +33,9 @@ class NDIWebcam {
         subscriberMonitor = SubscriberMonitor(ndiSender: ndiSender)
         
         // Configure camera after all properties are initialized
-        camera.resolution = resolution
-        camera.frameRate = frameRate
-        camera.delegate = self
+        self.camera.resolution = resolution
+        self.camera.frameRate = frameRate
+        self.camera.delegate = self
         
         // Set frame rate for HX3 encoding
         ndiSender.setFrameRate(frameRate)
@@ -68,11 +73,20 @@ class NDIWebcam {
             exit(1)
         }
         
-        // Start monitoring for subscribers
-        subscriberMonitor.startMonitoring()
+        if forceCameraMode {
+            logger.info("🔧 Force camera mode enabled - starting camera immediately")
+            camera.startCapture()
+            
+            // Reset frame count when starting
+            frameCount = 0
+            lastFPSReport = Date()
+        } else {
+            // Start monitoring for subscribers
+            subscriberMonitor.startMonitoring()
+            logger.info("Waiting for subscribers...")
+        }
         
         logger.info("NDI stream available as: \(ndiSender.sourceName)")
-        logger.info("Waiting for subscribers...")
         
         // Start dynamic status line (updates every second)
         startStatusLine()
@@ -104,9 +118,23 @@ class NDIWebcam {
         let uptimeStr = String(format: "%02d:%02d:%02d", hours, minutes, seconds)
         
         // Create status line
-        let cameraStatus = connections > 0 ? "ACTIVE" : "WAITING"
-        let encodingStr = encodingMode == .hx3 ? "HX3" : "RAW"
-        let fpsStr = connections > 0 ? String(format: "%.1f", currentFPS) : "0.0"
+        let cameraStatus: String
+        if forceCameraMode {
+            cameraStatus = "FORCED"
+        } else {
+            cameraStatus = connections > 0 ? "ACTIVE" : "WAITING"
+        }
+        
+        let encodingStr: String
+        switch encodingMode {
+        case .uncompressed:
+            encodingStr = "RAW"
+        case .hx3:
+            encodingStr = "HX3"
+        case .hevc:
+            encodingStr = "HEVC"
+        }
+        let fpsStr = (connections > 0 || forceCameraMode) ? String(format: "%.1f", currentFPS) : "0.0"
         
         // Clear line and print status
         print("\r\u{1B}[K", terminator: "")  // Clear current line
@@ -141,6 +169,11 @@ extension NDIWebcam: CameraCaptureDelegate {
         // Send frame via NDI
         ndiSender.sendFrame(sampleBuffer)
         frameCount += 1
+        
+        // Log first few frames to verify capture is working
+        if frameCount <= 5 {
+            logger.debug("Camera frame \(frameCount) captured and sent to NDI")
+        }
     }
     
     func cameraCapture(_ capture: CameraCapture, didEncounterError error: Error) {
@@ -158,17 +191,24 @@ extension NDIWebcam: CameraCaptureDelegate {
 
 extension NDIWebcam: SubscriberMonitorDelegate {
     func subscriberMonitor(_ monitor: SubscriberMonitor, subscribersChanged count: Int32) {
-        // Status is logged by the monitor
+        logger.debug("Subscriber count update: \(count)")
     }
     
     func subscriberMonitorShouldStartCamera(_ monitor: SubscriberMonitor) {
-        logger.info("Starting camera capture")
+        logger.info("🎥 Starting camera capture due to subscriber connection")
         camera.startCapture()
+        
+        // Reset frame count when starting
+        frameCount = 0
+        lastFPSReport = Date()
     }
     
     func subscriberMonitorShouldStopCamera(_ monitor: SubscriberMonitor) {
-        logger.info("Stopping camera capture")
+        logger.info("🛑 Stopping camera capture - no subscribers")
         camera.stopCapture()
+        
+        // Reset FPS when stopping
+        currentFPS = 0.0
     }
 }
 
@@ -180,6 +220,10 @@ struct CommandLineArgs {
     var frameRate = 30.0
     var verbose = false
     var encodingMode = NDIEncodingMode.uncompressed
+    var forceCamera = false
+    var listCameras = false
+    var cameraIndex: Int?
+    var cameraName: String?
     
     static func parse() -> CommandLineArgs {
         var args = CommandLineArgs()
@@ -240,6 +284,10 @@ struct CommandLineArgs {
                 args.verbose = true
                 i += 1
                 
+            case "--force-camera":
+                args.forceCamera = true
+                i += 1
+                
             case "--encoding":
                 if i + 1 < arguments.count {
                     let encoding = arguments[i + 1].lowercased()
@@ -248,11 +296,41 @@ struct CommandLineArgs {
                         args.encodingMode = .uncompressed
                     case "hx3", "h264":
                         args.encodingMode = .hx3
+                    case "hevc", "h265":
+                        args.encodingMode = .hevc
                     default:
                         print("Invalid encoding mode: \(encoding)")
                         printHelp()
                         exit(1)
                     }
+                    i += 2
+                } else {
+                    printHelp()
+                    exit(1)
+                }
+                
+            case "--list-cameras":
+                args.listCameras = true
+                i += 1
+                
+            case "--camera-index":
+                if i + 1 < arguments.count {
+                    if let index = Int(arguments[i + 1]) {
+                        args.cameraIndex = index
+                        i += 2
+                    } else {
+                        print("Invalid camera index: \(arguments[i + 1])")
+                        printHelp()
+                        exit(1)
+                    }
+                } else {
+                    printHelp()
+                    exit(1)
+                }
+                
+            case "--camera-name":
+                if i + 1 < arguments.count {
+                    args.cameraName = arguments[i + 1]
                     i += 2
                 } else {
                     printHelp()
@@ -283,18 +361,25 @@ struct CommandLineArgs {
           --name <string>      NDI source name (default: "Swift NDI Camera")
           --resolution <res>   Resolution: 720p, 1080p (default), 4k
           --fps <number>       Frame rate (default: 30)
-          --encoding <mode>    Encoding: uncompressed (default), hx3
+          --encoding <mode>    Encoding: uncompressed (default), hx3, hevc
+          --list-cameras       List available cameras and exit
+          --camera-index <n>   Select camera by index (use --list-cameras first)
+          --camera-name <name> Select camera by name (partial match)
           --verbose, -v        Enable verbose logging
+          --force-camera       Start camera immediately (bypass subscriber detection)
           --help, -h           Show this help message
         
         Encoding Modes:
           uncompressed (raw)   High quality, high bandwidth (default)
           hx3 (h264)          H.264 compressed, optimized for latency and bandwidth
+          hevc (h265)         H.265 compressed, better compression than H.264
         
         Examples:
           ndi-webcam --name "Mac Camera" --resolution 1080p --fps 30
           ndi-webcam --encoding hx3 --name "Low Bandwidth Camera"
+          ndi-webcam --encoding hevc --name "HEVC Camera"
           ndi-webcam --encoding uncompressed --resolution 4k --fps 60
+          ndi-webcam --force-camera --verbose  # Debug camera issues
         
         Note: NDI SDK must be installed from ndi.tv
         """)
@@ -305,6 +390,36 @@ struct CommandLineArgs {
 
 let args = CommandLineArgs.parse()
 
+// Handle camera listing
+if args.listCameras {
+    CameraCapture.printAvailableCameras()
+    exit(0)
+}
+
+// Create camera capture instance
+let camera = CameraCapture()
+
+// Handle camera selection
+if let cameraIndex = args.cameraIndex {
+    if let device = CameraCapture.getCameraByIndex(cameraIndex) {
+        camera.setCamera(device: device)
+        print("Selected camera by index: \(device.localizedName)")
+    } else {
+        print("Error: Camera index \(cameraIndex) not found")
+        print("Use --list-cameras to see available cameras")
+        exit(1)
+    }
+} else if let cameraName = args.cameraName {
+    if let device = CameraCapture.getCameraByName(cameraName) {
+        camera.setCamera(device: device)
+        print("Selected camera by name: \(device.localizedName)")
+    } else {
+        print("Error: No camera found matching '\(cameraName)'")
+        print("Use --list-cameras to see available cameras")
+        exit(1)
+    }
+}
+
 print("""
 ╔═══════════════════════════════════╗
 ║       ndi-webcam v1.0             ║
@@ -313,7 +428,7 @@ print("""
 Source Name: \(args.sourceName)
 Resolution: \(args.resolution.rawValue)
 Frame Rate: \(args.frameRate) fps
-Encoding: \(args.encodingMode == .hx3 ? "NDI|HX3 (H.264)" : "Uncompressed")
+Encoding: \(args.encodingMode == .hx3 ? "NDI|HX3 (H.264)" : args.encodingMode == .hevc ? "H.265/HEVC" : "Uncompressed")
 
 Starting...
 """)
@@ -323,7 +438,9 @@ let streamer = NDIWebcam(
     resolution: args.resolution,
     frameRate: args.frameRate,
     verbose: args.verbose,
-    encodingMode: args.encodingMode
+    encodingMode: args.encodingMode,
+    forceCamera: args.forceCamera,
+    camera: camera
 )
 
 streamer.run()
